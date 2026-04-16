@@ -108,7 +108,7 @@ def backfill_all(client):
 # ── Event handlers ────────────────────────────────────────────────────────────
 
 @app.command("/tally")
-def handle_tally_command(ack, command, say):
+def handle_tally_command(ack, command, say, client):
     ack()
     channel = command["channel_id"]
     if command.get("text", "").strip() == "reset":
@@ -122,7 +122,9 @@ def handle_tally_command(ack, command, say):
         return
     lines = ["*📸 Image Tag Tally:*"]
     for user_id, count in sorted(counts.items(), key=lambda x: -x[1]):
-        lines.append(f"<@{user_id}>: {count}")
+        info = client.users_info(user=user_id)
+        name = info["user"]["profile"].get("display_name") or info["user"]["name"]
+        lines.append(f"{name}: {count}")
     say("\n".join(lines))
 
 @app.message()
