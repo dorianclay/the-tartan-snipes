@@ -105,27 +105,90 @@ def backfill_all(client):
         if channel.get("is_member"):
             backfill_channel(client, channel["id"])
 
+SNIPER_CHANNEL_ID = None  # resolved once on first home-tab open
+
+def get_sniper_channel_id(client):
+    global SNIPER_CHANNEL_ID
+    if SNIPER_CHANNEL_ID:
+        return SNIPER_CHANNEL_ID
+    cursor = None
+    while True:
+        kwargs = {"types": "public_channel", "exclude_archived": True, "limit": 200}
+        if cursor:
+            kwargs["cursor"] = cursor
+        resp = client.conversations_list(**kwargs)
+        for ch in resp.get("channels", []):
+            if ch["name"] == "snipers":
+                SNIPER_CHANNEL_ID = ch["id"]
+                return SNIPER_CHANNEL_ID
+        cursor = resp.get("response_metadata", {}).get("next_cursor")
+        if not cursor:
+            break
+    return None
+
+def build_home_view(client):
+    channel_id = get_sniper_channel_id(client)
+    counts = tally.get(channel_id) if channel_id else None
+
+    blocks = [{"type": "header", "text": {"type": "plain_text", "text": "📸 Sniper Leaderboard"}}]
+
+    if not counts:
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "No tagged images recorded yet in #snipers."}})
+    else:
+        # Column headers
+        blocks.append({
+            "type": "section",
+            "fields": [
+                {"type": "mrkdwn", "text": "*Victim*"},
+                {"type": "mrkdwn", "text": "*Snipes*"},
+            ]
+        })
+        blocks.append({"type": "divider"})
+
+        rows = sorted(counts.items(), key=lambda x: -x[1])
+        medals = ["🥇", "🥈", "🥉"]
+        for i, (user_id, count) in enumerate(rows):
+            info = client.users_info(user=user_id)
+            name = info["user"]["profile"].get("display_name") or info["user"]["name"]
+            prefix = medals[i] if i < len(medals) else f"{i + 1}."
+            blocks.append({
+                "type": "section",
+                "fields": [
+                    {"type": "mrkdwn", "text": f"{prefix} {name}"},
+                    {"type": "mrkdwn", "text": str(count)},
+                ]
+            })
+
+    return {"type": "home", "blocks": blocks}
+
 # ── Event handlers ────────────────────────────────────────────────────────────
 
+@app.event("app_home_opened")
+def handle_home_opened(event, client):
+    print(f"app_home_opened: tab={event.get('tab')} user={event.get('user')}")
+    if event.get("tab") != "home":
+        return
+    client.views_publish(user_id=event["user"], view=build_home_view(client))
+
 @app.command("/tally")
-def handle_tally_command(ack, command, say, client):
+def handle_tally_command(ack, command, respond, client):
     ack()
     channel = command["channel_id"]
     if command.get("text", "").strip() == "reset":
         tally[channel].clear()
         save_tally()
-        say("Tally reset for this channel.")
+        respond("Tally reset for this channel.")
         return
     counts = tally.get(channel)
     if not counts:
-        say("No tagged images recorded yet in this channel.")
+        respond("No tagged images recorded yet in this channel.")
         return
     lines = ["*📸 Image Tag Tally:*"]
     for user_id, count in sorted(counts.items(), key=lambda x: -x[1]):
         info = client.users_info(user=user_id)
         name = info["user"]["profile"].get("display_name") or info["user"]["name"]
         lines.append(f"{name}: {count}")
-    say("\n".join(lines))
+    respond("\n".join(lines))
 
 @app.message()
 def handle_message(message, client):
@@ -136,9 +199,9 @@ def handle_message(message, client):
             timestamp=message["ts"],
             name="white_check_mark"
         )
-        # Advance the cursor so future backfills skip this message
         cursors[message["channel"]] = message["ts"]
         save_cursors()
+        client.views_publish(user_id=message["user"], view=build_home_view(client))
 
 # ── Start ─────────────────────────────────────────────────────────────────────
 
